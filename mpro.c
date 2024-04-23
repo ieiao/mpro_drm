@@ -190,27 +190,22 @@ static int mpro_update_frame(struct mpro_device *mpro, unsigned int len)
 			    len, NULL, MPRO_MAX_DELAY);
 }
 
-static int mpro_buf_copy(void *dst, struct iosys_map *src_map, struct drm_framebuffer *fb,
-			 struct drm_rect *clip)
+static int mpro_buf_copy(void *dst, const struct dma_buf_map *map, struct drm_framebuffer *fb, struct drm_rect *clip)
 {
 	int ret;
-	struct iosys_map dst_map;
-
-	iosys_map_set_vaddr(&dst_map, dst);
 
 	ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
 	if (ret)
 		return ret;
 
-	drm_fb_xrgb8888_to_rgb565(&dst_map, NULL, src_map, fb, clip, false);
+	drm_fb_xrgb8888_to_rgb565(dst, map->vaddr, fb, clip, false);
 
 	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
 	return 0;
 }
 
-static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb,
-				struct drm_rect *rect)
+static void mpro_fb_mark_dirty(struct drm_framebuffer *fb, const struct dma_buf_map *map, struct drm_rect *rect)
 {
 	struct mpro_device *mpro = to_mpro(fb->dev);
 	int idx, len, width, ret;
@@ -218,7 +213,7 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 	if (!drm_dev_enter(fb->dev, &idx))
 		return;
 
-	ret = mpro_buf_copy(mpro->draw_buf, src, fb, rect);
+	ret = mpro_buf_copy(mpro->draw_buf, map, fb, rect);
 	if (ret)
 		goto err_msg;
 
@@ -398,7 +393,7 @@ static void mpro_pipe_enable(struct drm_simple_display_pipe *pipe,
 	};
 
 	mpro_send_command(mpro, cmd_quit_sleep, sizeof(cmd_quit_sleep));
-	mpro_fb_mark_dirty(&shadow_plane_state->data[0], fb, &rect);
+	mpro_fb_mark_dirty(fb, &shadow_plane_state->data[0], &rect);
 }
 
 static void mpro_pipe_disable(struct drm_simple_display_pipe *pipe)
@@ -419,7 +414,7 @@ static void mpro_pipe_update(struct drm_simple_display_pipe *pipe,
 		return;
 
 	if (drm_atomic_helper_damage_merged(old_state, state, &rect))
-		mpro_fb_mark_dirty(&shadow_plane_state->data[0], fb, &rect);
+		mpro_fb_mark_dirty(fb, &shadow_plane_state->data[0], &rect);
 }
 
 static const struct drm_simple_display_pipe_funcs mpro_pipe_funcs = {
