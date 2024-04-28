@@ -320,12 +320,51 @@ static const struct drm_connector_helper_funcs mpro_conn_helper_funcs = {
 	.get_modes = mpro_conn_get_modes,
 };
 
+static int mpro_backlight_update_status(struct backlight_device *bd)
+{
+	struct mpro_device *mpro = bl_get_data(bd);
+	int brightness = backlight_get_brightness(bd);
+	int ret;
+
+	cmd_set_brightness[6] = brightness & 0xff;
+	ret = mpro_send_command(mpro, cmd_set_brightness, sizeof(cmd_set_brightness));
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static const struct backlight_ops mpro_bl_ops = {
+	.update_status = mpro_backlight_update_status,
+};
+
+static int mpro_conn_late_register(struct drm_connector *connector)
+{
+	struct mpro_device *mpro = to_mpro(connector->dev);
+	struct backlight_device *bl;
+
+	bl = devm_backlight_device_register(connector->kdev, "mpro_backlight",
+					    connector->kdev, mpro,
+					    &mpro_bl_ops, NULL);
+	if (IS_ERR(bl)) {
+		drm_err(connector->dev, "Unable to register backlight device\n");
+		return -EIO;
+	}
+
+	bl->props.brightness = 255;
+	bl->props.max_brightness = 255;
+	mpro->bl_dev = bl;
+
+	return 0;
+}
+
 static const struct drm_connector_funcs mpro_conn_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
 	.reset = drm_atomic_helper_connector_reset,
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
+	.late_register = mpro_conn_late_register,
 };
 
 static int mpro_conn_init(struct mpro_device *mpro)
@@ -639,24 +678,6 @@ static void mpro_edid_setup(struct mpro_device *mpro)
 	mpro_edid.checksum = mpro_edid_block_checksum((u8*)&mpro_edid);
 }
 
-static int mpro_backlight_update_status(struct backlight_device *bd)
-{
-	struct mpro_device *mpro = bl_get_data(bd);
-	int brightness = backlight_get_brightness(bd);
-	int ret;
-
-	cmd_set_brightness[6] = brightness & 0xff;
-	ret = mpro_send_command(mpro, cmd_set_brightness, sizeof(cmd_set_brightness));
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-static const struct backlight_ops mpro_bl_ops = {
-	.update_status = mpro_backlight_update_status,
-};
-
 static int mpro_touch_open(struct input_dev *input)
 {
 	struct mpro_device *mpro = input_get_drvdata(input);
@@ -768,7 +789,6 @@ static int mpro_usb_probe(struct usb_interface *interface,
 {
 	struct mpro_device *mpro;
 	struct drm_device *dev;
-	struct backlight_device *bl;
 	int ret;
 
 	mpro = devm_drm_dev_alloc(&interface->dev, &mpro_drm_driver,
@@ -836,18 +856,6 @@ static int mpro_usb_probe(struct usb_interface *interface,
 
 	drm_fbdev_generic_setup(dev, 0);
 
-	bl = devm_backlight_device_register(dev->dev, dev_name(dev->dev),
-					    dev->dev, mpro,
-					    &mpro_bl_ops, NULL);
-	if (IS_ERR(bl)) {
-		drm_err(dev, "Unable to register backlight device\n");
-		goto err_put_device;
-	}
-
-	bl->props.brightness = 255;
-	bl->props.max_brightness = 255;
-	mpro->bl_dev = bl;
-
 	ret = mpro_touch_init(interface, mpro);
 
 	return ret;
@@ -861,6 +869,12 @@ static void mpro_usb_disconnect(struct usb_interface *interface)
 {
 	struct drm_device *dev = usb_get_intfdata(interface);
 	struct mpro_device *mpro = to_mpro(dev);
+	struct usb_device *udev = mpro_to_usb_device(mpro);
+
+	input_unregister_device(mpro->input);
+	usb_free_urb(mpro->irq);
+	usb_free_coherent(udev, MPRO_INPUT_TRS_SIZE, mpro->trans_buf,
+			  mpro->dma);
 
 	put_device(mpro->dmadev);
 	mpro->dmadev = NULL;
