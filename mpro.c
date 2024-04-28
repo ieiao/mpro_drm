@@ -6,6 +6,8 @@
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/usb.h>
+#include <linux/usb/input.h>
+#include <linux/input.h>
 #include <linux/backlight.h>
 
 #include <drm/drm_atomic_helper.h>
@@ -36,6 +38,7 @@
 
 #define MPRO_BPP		16
 #define MPRO_MAX_DELAY		100
+#define MPRO_INPUT_TRS_SIZE	14
 
 #define MODEL_DEFAULT		"MPRO\n"
 #define MODEL_5IN		"MPRO-5\n"
@@ -46,23 +49,64 @@
 #define MODEL_3IN4		"MPRO-3IN4\n"
 
 struct mpro_device {
-	struct drm_device		dev;
-	struct device			*dmadev;
-	struct backlight_device 	*bl_dev;
-	struct drm_simple_display_pipe	pipe;
-	struct drm_connector		conn;
-	unsigned int			screen;
-	unsigned int			version;
-	unsigned char			id[8];
-	char 				*model;
-	unsigned int			width;
-	unsigned int			height;
-	unsigned int			width_mm;
-	unsigned int			height_mm;
-	unsigned int			margin;
-	unsigned char			cmd[64];
-	unsigned char			*data;
-	unsigned int			data_size;
+	struct drm_device dev;
+	struct device *dmadev;
+	struct usb_interface *interface;
+	struct backlight_device *bl_dev;
+	struct drm_simple_display_pipe pipe;
+	struct drm_connector conn;
+
+	unsigned int screen;
+	unsigned int version;
+	unsigned char id[8];
+	char *model;
+
+	unsigned int width;
+	unsigned int height;
+	unsigned int margin;
+	unsigned int width_mm;
+	unsigned int height_mm;
+
+	unsigned char cmd[64];
+	unsigned char *draw_buf;
+
+	struct input_dev *input;
+	char name[64];
+	char phys[64];
+	struct urb *irq;
+	unsigned char *trans_buf;
+	dma_addr_t dma;
+};
+
+union mpro_axis {
+	struct hx {
+		unsigned char h:4;
+		unsigned char u:2;
+		unsigned char f:2;
+	} x;
+
+	struct hy {
+		unsigned char h:4;
+		unsigned char id:4;
+	} y;
+
+	char c;
+};
+
+struct mpro_point {
+	union mpro_axis xh;
+	unsigned char xl;
+	union mpro_axis yh;
+	unsigned char yl;
+
+	unsigned char weight;
+	unsigned char misc;
+};
+
+struct mpro_touch {
+	unsigned char unused[2];
+	unsigned char count;
+	struct mpro_point p[2];
 };
 
 #define to_mpro(__dev) container_of(__dev, struct mpro_device, dev)
@@ -107,11 +151,10 @@ static int mpro_data_alloc(struct mpro_device *mpro)
 
 	block_size = mpro->height * mpro->width * MPRO_BPP / 8 + mpro->margin;
 
-	mpro->data = drmm_kmalloc(&mpro->dev, block_size, GFP_KERNEL);
-	if (!mpro->data)
+	mpro->draw_buf = drmm_kmalloc(&mpro->dev, block_size, GFP_KERNEL);
+	if (!mpro->draw_buf)
 		return -ENOMEM;
 
-	mpro->data_size = block_size;
 	return 0;
 }
 
@@ -143,7 +186,7 @@ static int mpro_update_frame(struct mpro_device *mpro, unsigned int len)
 	if (ret < 0)
 		return ret;
 
-	return usb_bulk_msg(udev, usb_sndbulkpipe(udev, 0x02), mpro->data,
+	return usb_bulk_msg(udev, usb_sndbulkpipe(udev, 0x02), mpro->draw_buf,
 			    len, NULL, MPRO_MAX_DELAY);
 }
 
@@ -175,7 +218,7 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 	if (!drm_dev_enter(fb->dev, &idx))
 		return;
 
-	ret = mpro_buf_copy(mpro->data, src, fb, rect);
+	ret = mpro_buf_copy(mpro->draw_buf, src, fb, rect);
 	if (ret)
 		goto err_msg;
 
@@ -614,6 +657,112 @@ static const struct backlight_ops mpro_bl_ops = {
 	.update_status = mpro_backlight_update_status,
 };
 
+static int mpro_touch_open(struct input_dev *input)
+{
+	struct mpro_device *mpro = input_get_drvdata(input);
+	int ret;
+
+	ret = usb_submit_urb(mpro->irq, GFP_KERNEL);
+	if (ret)
+		return -EIO;
+
+	return 0;
+}
+
+static void mpro_touch_close(struct input_dev *input)
+{
+	struct mpro_device *mpro = input_get_drvdata(input);
+	usb_kill_urb(mpro->irq);
+}
+
+static void mpro_touch_irq(struct urb *urb)
+{
+	struct mpro_device *mpro = urb->context;
+	struct device *dev = &mpro->interface->dev;
+	struct mpro_touch *t = (struct mpro_touch *)mpro->trans_buf;
+	int ret, x, y, touch;
+
+	/* urb->status == ENOENT: closed by usb_kill_urb */
+	if (urb->status)
+		return;
+
+	x = (((int)t->p[0].xh.x.h) << 8) + t->p[0].xl;
+	y = (((int)t->p[0].yh.y.h) << 8) + t->p[0].yl;
+	touch = (t->p[0].xh.x.f != 1) ? 1 : 0;
+
+	input_report_key(mpro->input, BTN_TOUCH, touch);
+	input_report_abs(mpro->input, ABS_X, x);
+	input_report_abs(mpro->input, ABS_Y, y);
+	input_sync(mpro->input);
+
+	ret = usb_submit_urb(urb, GFP_ATOMIC);
+	if (ret)
+		dev_err(dev, "usb_submit_urb failed at irq: %d\n", ret);
+}
+
+static int mpro_touch_init(struct usb_interface *interface,
+				struct mpro_device *mpro)
+{
+	struct usb_device *udev = mpro_to_usb_device(mpro);
+	int ret;
+
+	mpro->irq = usb_alloc_urb(0, GFP_KERNEL);
+	if (!mpro->irq)
+		return -ENOMEM;
+
+	mpro->trans_buf = usb_alloc_coherent(udev, MPRO_INPUT_TRS_SIZE,
+						GFP_KERNEL, &mpro->dma);
+	if (!mpro->trans_buf) {
+		ret = -ENOMEM;
+		goto error_free_urb;
+	}
+
+	usb_fill_int_urb(mpro->irq, udev, usb_rcvintpipe(udev, 1),
+			mpro->trans_buf, MPRO_INPUT_TRS_SIZE,
+			mpro_touch_irq, mpro, 0);
+	mpro->irq->dev = udev;
+	mpro->irq->transfer_dma = mpro->dma;
+	mpro->irq->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+
+	usb_make_path(udev, mpro->phys, sizeof(mpro->phys));
+	strlcat(mpro->phys, "/input0", sizeof(mpro->phys));
+	snprintf(mpro->name, sizeof(mpro->name), "VoCore Touch");
+
+	mpro->input = input_allocate_device();
+	if (!mpro->input) {
+		ret = -ENOMEM;
+		goto error_free_buffer;
+	}
+	usb_to_input_id(udev, &mpro->input->id);
+	mpro->input->name = mpro->name;
+	mpro->input->phys = mpro->phys;
+	mpro->input->dev.parent = &interface->dev;
+
+	mpro->input->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
+	mpro->input->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+	input_set_abs_params(mpro->input, ABS_X, 0, mpro->width, 0, 0);
+	input_set_abs_params(mpro->input, ABS_Y, 0, mpro->height, 0, 0);
+
+	mpro->input->open = mpro_touch_open;
+	mpro->input->close = mpro_touch_close;
+	input_set_drvdata(mpro->input, mpro);
+
+	ret = input_register_device(mpro->input);
+	if (ret)
+		goto error_free_input;
+
+	return 0;
+
+error_free_input:
+	input_free_device(mpro->input);
+error_free_buffer:
+	usb_free_coherent(udev, MPRO_INPUT_TRS_SIZE, mpro->trans_buf, mpro->dma);
+error_free_urb:
+	usb_free_urb(mpro->irq);
+
+	return ret;
+}
+
 static int mpro_usb_probe(struct usb_interface *interface,
 			  const struct usb_device_id *id)
 {
@@ -627,6 +776,7 @@ static int mpro_usb_probe(struct usb_interface *interface,
 	if (IS_ERR(mpro))
 		return PTR_ERR(mpro);
 	dev = &mpro->dev;
+	mpro->interface = interface;
 
 	mpro->dmadev = usb_intf_get_dma_device(to_usb_interface(dev->dev));
 	if (!mpro->dmadev)
@@ -698,7 +848,9 @@ static int mpro_usb_probe(struct usb_interface *interface,
 	bl->props.max_brightness = 255;
 	mpro->bl_dev = bl;
 
-	return 0;
+	ret = mpro_touch_init(interface, mpro);
+
+	return ret;
 
 err_put_device:
 	put_device(mpro->dmadev);
