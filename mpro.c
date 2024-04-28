@@ -134,7 +134,7 @@ static int mpro_send_command(struct mpro_device *mpro, void* cmd, unsigned int l
 				MPRO_MAX_DELAY);
 }
 
-static int mpro_update_frame(struct mpro_device *mpro)
+static int mpro_update_frame(struct mpro_device *mpro, unsigned int len)
 {
 	struct usb_device *udev = mpro_to_usb_device(mpro);
 	int ret;
@@ -144,7 +144,7 @@ static int mpro_update_frame(struct mpro_device *mpro)
 		return ret;
 
 	return usb_bulk_msg(udev, usb_sndbulkpipe(udev, 0x02), mpro->data,
-			    mpro->data_size, NULL, MPRO_MAX_DELAY);
+			    len, NULL, MPRO_MAX_DELAY);
 }
 
 static int mpro_buf_copy(void *dst, struct iosys_map *src_map, struct drm_framebuffer *fb,
@@ -193,7 +193,7 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 	cmd_draw_part[3] = (char)(len >> 8);
 	cmd_draw_part[4] = (char)(len >> 16);
 
-	ret = mpro_update_frame(mpro);
+	ret = mpro_update_frame(mpro, len);
 err_msg:
 	if (ret)
 		dev_err_once(fb->dev->dev, "Failed to update display %d\n", ret);
