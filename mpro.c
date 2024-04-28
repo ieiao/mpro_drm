@@ -6,6 +6,7 @@
 #include <linux/module.h>
 #include <linux/pm.h>
 #include <linux/usb.h>
+#include <linux/backlight.h>
 
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_atomic_state_helper.h>
@@ -47,6 +48,7 @@
 struct mpro_device {
 	struct drm_device		dev;
 	struct device			*dmadev;
+	struct backlight_device 	*bl_dev;
 	struct drm_simple_display_pipe	pipe;
 	struct drm_connector		conn;
 	unsigned int			screen;
@@ -88,6 +90,10 @@ static char cmd_draw_part[12] = {
 
 static char cmd_quit_sleep[6] = {
 	0x00, 0x29, 0x00, 0x00, 0x00, 0x00
+};
+
+static char cmd_set_brightness[8] = {
+	0x00, 0x51, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00
 };
 
 static inline struct usb_device *mpro_to_usb_device(struct mpro_device *mpro)
@@ -590,11 +596,30 @@ static void mpro_edid_setup(struct mpro_device *mpro)
 	mpro_edid.checksum = mpro_edid_block_checksum((u8*)&mpro_edid);
 }
 
+static int mpro_backlight_update_status(struct backlight_device *bd)
+{
+	struct mpro_device *mpro = bl_get_data(bd);
+	int brightness = backlight_get_brightness(bd);
+	int ret;
+
+	cmd_set_brightness[6] = brightness & 0xff;
+	ret = mpro_send_command(mpro, cmd_set_brightness, sizeof(cmd_set_brightness));
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static const struct backlight_ops mpro_bl_ops = {
+	.update_status = mpro_backlight_update_status,
+};
+
 static int mpro_usb_probe(struct usb_interface *interface,
 			  const struct usb_device_id *id)
 {
 	struct mpro_device *mpro;
 	struct drm_device *dev;
+	struct backlight_device *bl;
 	int ret;
 
 	mpro = devm_drm_dev_alloc(&interface->dev, &mpro_drm_driver,
@@ -660,7 +685,19 @@ static int mpro_usb_probe(struct usb_interface *interface,
 		goto err_put_device;
 
 	drm_fbdev_generic_setup(dev, 0);
-	
+
+	bl = devm_backlight_device_register(dev->dev, dev_name(dev->dev),
+					    dev->dev, mpro,
+					    &mpro_bl_ops, NULL);
+	if (IS_ERR(bl)) {
+		drm_err(dev, "Unable to register backlight device\n");
+		goto err_put_device;
+	}
+
+	bl->props.brightness = 255;
+	bl->props.max_brightness = 255;
+	mpro->bl_dev = bl;
+
 	return 0;
 
 err_put_device:
