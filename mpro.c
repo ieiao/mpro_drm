@@ -343,9 +343,9 @@ static int mpro_conn_late_register(struct drm_connector *connector)
 	struct mpro_device *mpro = to_mpro(connector->dev);
 	struct backlight_device *bl;
 
-	bl = devm_backlight_device_register(connector->kdev, "mpro_backlight",
-					    connector->kdev, mpro,
-					    &mpro_bl_ops, NULL);
+	bl = backlight_device_register("mpro_backlight",
+					connector->kdev, mpro,
+					&mpro_bl_ops, NULL);
 	if (IS_ERR(bl)) {
 		drm_err(connector->dev, "Unable to register backlight device\n");
 		return -EIO;
@@ -358,6 +358,14 @@ static int mpro_conn_late_register(struct drm_connector *connector)
 	return 0;
 }
 
+static void mpro_conn_early_unregister(struct drm_connector *connector)
+{
+	struct mpro_device *mpro = to_mpro(connector->dev);
+
+	if (mpro->bl_dev)
+		backlight_device_unregister(mpro->bl_dev);
+}
+
 static const struct drm_connector_funcs mpro_conn_funcs = {
 	.fill_modes = drm_helper_probe_single_connector_modes,
 	.destroy = drm_connector_cleanup,
@@ -365,6 +373,7 @@ static const struct drm_connector_funcs mpro_conn_funcs = {
 	.atomic_duplicate_state = drm_atomic_helper_connector_duplicate_state,
 	.atomic_destroy_state = drm_atomic_helper_connector_destroy_state,
 	.late_register = mpro_conn_late_register,
+	.early_unregister = mpro_conn_early_unregister,
 };
 
 static int mpro_conn_init(struct mpro_device *mpro)
