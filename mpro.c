@@ -16,6 +16,7 @@
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_fb_dma_helper.h>
 #include <drm/drm_fb_helper.h>
 #include <drm/drm_file.h>
 #include <drm/drm_format_helper.h>
@@ -23,7 +24,7 @@
 #include <drm/drm_framebuffer.h>
 #include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
-#include <drm/drm_gem_shmem_helper.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_ioctl.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_modeset_helper_vtables.h>
@@ -440,7 +441,7 @@ static const uint64_t mpro_pipe_modifiers[] = {
 	DRM_FORMAT_MOD_INVALID
 };
 
-DEFINE_DRM_GEM_FOPS(mpro_fops);
+DEFINE_DRM_GEM_DMA_FOPS(mpro_fops);
 
 static const struct drm_driver mpro_drm_driver = {
 	.driver_features = DRIVER_MODESET | DRIVER_GEM | DRIVER_ATOMIC,
@@ -452,7 +453,7 @@ static const struct drm_driver mpro_drm_driver = {
 	.minor		 = DRIVER_MINOR,
 
 	.fops		 = &mpro_fops,
-	DRM_GEM_SHMEM_DRIVER_OPS,
+	DRM_GEM_DMA_DRIVER_OPS_VMAP,
 };
 
 static const struct drm_mode_config_funcs mpro_mode_config_funcs = {
@@ -812,6 +813,14 @@ static int mpro_usb_probe(struct usb_interface *interface,
 	mpro->dmadev = usb_intf_get_dma_device(to_usb_interface(dev->dev));
 	if (!mpro->dmadev)
 		drm_warn(dev, "buffer sharing not supported"); /* not an error */
+
+	if (!dev->dev->coherent_dma_mask) {
+		ret = dma_coerce_mask_and_coherent(dev->dev, DMA_BIT_MASK(32));
+		if (ret) {
+			drm_warn(dev, "Failed to set dma mask %d\n", ret);
+			goto err_put_device;
+		}
+	}
 
 	ret = mpro_get_screen(mpro);
 	if (ret) {
