@@ -177,6 +177,30 @@ static int mpro_send_command(struct mpro_device *mpro, void* cmd, unsigned int l
 				MPRO_MAX_DELAY);
 }
 
+static int mpro_set_backlight(struct mpro_device *mpro, int v)
+{
+	int ret;
+
+	cmd_set_brightness[6] = v & 0xff;
+	ret = mpro_send_command(mpro, cmd_set_brightness, sizeof(cmd_set_brightness));
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mpro_backlight_update_status(struct backlight_device *bd)
+{
+	struct mpro_device *mpro = bl_get_data(bd);
+	int brightness = backlight_get_brightness(bd);
+
+	return mpro_set_backlight(mpro, brightness);
+}
+
+static const struct backlight_ops mpro_bl_ops = {
+	.update_status = mpro_backlight_update_status,
+};
+
 static int mpro_update_frame(struct mpro_device *mpro, unsigned int len)
 {
 	struct usb_device *udev = mpro_to_usb_device(mpro);
@@ -213,7 +237,7 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 				struct drm_rect *rect)
 {
 	struct mpro_device *mpro = to_mpro(fb->dev);
-	int idx, len, width, ret;
+	int idx, len, width, height, ret;
 
 	if (!drm_dev_enter(fb->dev, &idx))
 		return;
@@ -222,8 +246,9 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 	if (ret)
 		goto err_msg;
 
-	len = (rect->x2 - rect->x1) * (rect->y2 - rect->y1) * MPRO_BPP / 8;
 	width = rect->x2 - rect->x1;
+	height = rect->y2 - rect->y1;
+	len = width * height * MPRO_BPP / 8;
 
 	cmd_draw_part[6] = (char)(rect->x1 >> 0);
 	cmd_draw_part[7] = (char)(rect->x1 >> 8);
@@ -244,14 +269,9 @@ err_msg:
 	drm_dev_exit(idx);
 }
 
-/* ------------------------------------------------------------------ */
-/* mpro connector						      */
-
 /*
  * We use fake EDID info so that userspace know that it is dealing with
- * an Acer projector, rather then listing this as an "unknown" monitor.
- * Note this assumes this driver is only ever used with the Acer C120, if we
- * add support for other devices the vendor and model should be parameterized.
+ * an MPRO screen, rather then listing this as an "unknown" monitor.
  */
 static struct edid mpro_edid = {
 	.header		= { 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 },
@@ -318,24 +338,6 @@ static int mpro_conn_get_modes(struct drm_connector *connector)
 
 static const struct drm_connector_helper_funcs mpro_conn_helper_funcs = {
 	.get_modes = mpro_conn_get_modes,
-};
-
-static int mpro_backlight_update_status(struct backlight_device *bd)
-{
-	struct mpro_device *mpro = bl_get_data(bd);
-	int brightness = backlight_get_brightness(bd);
-	int ret;
-
-	cmd_set_brightness[6] = brightness & 0xff;
-	ret = mpro_send_command(mpro, cmd_set_brightness, sizeof(cmd_set_brightness));
-	if (ret < 0)
-		return ret;
-
-	return 0;
-}
-
-static const struct backlight_ops mpro_bl_ops = {
-	.update_status = mpro_backlight_update_status,
 };
 
 static int mpro_conn_late_register(struct drm_connector *connector)
