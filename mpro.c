@@ -402,13 +402,14 @@ static void mpro_pipe_enable(struct drm_simple_display_pipe *pipe,
 	};
 
 	mpro_send_command(mpro, cmd_quit_sleep, sizeof(cmd_quit_sleep));
+	mpro_set_backlight(mpro, 255);
 	mpro_fb_mark_dirty(&shadow_plane_state->data[0], fb, &rect);
 }
 
 static void mpro_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
-	//struct mpro_device *mpro = to_mpro(pipe->crtc.dev);
-
+	struct mpro_device *mpro = to_mpro(pipe->crtc.dev);
+	mpro_set_backlight(mpro, 0);
 }
 
 static void mpro_pipe_update(struct drm_simple_display_pipe *pipe,
