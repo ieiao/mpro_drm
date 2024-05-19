@@ -1,7 +1,14 @@
-obj-m := mpro.o
+obj-m += mpro.o
+
+# Default to running kernel's build directory if KDIR not set externally
+KDIR ?= "/lib/modules/$(shell uname -r)/build"
 
 all:
-	make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+install:
+	$(MAKE) -C "$(KDIR)" M="$(CURDIR)" modules_install
+	depmod -A
 
 clean:
-	make -C /lib/modules/$(shell uname -r)/build/ M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
