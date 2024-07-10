@@ -238,29 +238,22 @@ static void mpro_fb_mark_dirty(struct iosys_map *src, struct drm_framebuffer *fb
 {
 	struct mpro_device *mpro = to_mpro(fb->dev);
 	int idx, len, width, height, ret;
-	struct drm_rect clip;
 
 	if (!drm_dev_enter(fb->dev, &idx))
 		return;
 
-	width = fb->width;
-	height = fb->height;
-
-	clip.x1 = 0;
-	clip.y1 = 0;
-	clip.x2 = width;
-	clip.y2 = height;
-
-	ret = mpro_buf_copy(mpro->draw_buf, src, fb, &clip);
+	ret = mpro_buf_copy(mpro->draw_buf, src, fb, rect);
 	if (ret)
 		goto err_msg;
 
+	width = rect->x2 - rect->x1;
+	height = rect->y2 - rect->y1;
 	len = width * height * MPRO_BPP / 8;
 
-	cmd_draw_part[6] = 0;
-	cmd_draw_part[7] = 0;
-	cmd_draw_part[8] = 0;
-	cmd_draw_part[9] = 0;
+	cmd_draw_part[6] = (char)(rect->x1 >> 0);
+	cmd_draw_part[7] = (char)(rect->x1 >> 8);
+	cmd_draw_part[8] = (char)(rect->y1 >> 0);
+	cmd_draw_part[9] = (char)(rect->y1 >> 8);
 	cmd_draw_part[10] = (char)(width >> 0);
 	cmd_draw_part[11] = (char)(width >> 8);
 
