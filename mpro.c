@@ -47,6 +47,7 @@
 #define MODEL_4IN		"MPRO-4\n"
 #define MODEL_6IN8		"MPRO-6IN8\n"
 #define MODEL_3IN4		"MPRO-3IN4\n"
+#define MODEL_10IN		"MPRO-10\n"
 
 struct mpro_device {
 	struct drm_device dev;
@@ -620,6 +621,13 @@ static void mpro_mode_config_setup(struct mpro_device *mpro)
 		width_mm = 88;
 		height_mm = 88;
 		break;
+
+	case 0x0000000a:
+		model = MODEL_10IN;
+		width = 1024;
+		height = 600;
+		width_mm = 222;
+		height_mm = 125;
 	}
 
 	mpro->width = width;
